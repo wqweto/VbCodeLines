@@ -1,6 +1,11 @@
 Attribute VB_Name = "mdCodeLines"
 Option Explicit
 
+Private Declare Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (Destination As Any, Source As Any, ByVal Length As Long)
+Private Declare Function CommandLineToArgvW Lib "shell32" (ByVal lpCmdLine As Long, pNumArgs As Long) As Long
+Private Declare Function LocalFree Lib "kernel32" (ByVal hMem As Long) As Long
+Private Declare Function ApiSysAllocString Lib "oleaut32" Alias "SysAllocString" (ByVal Ptr As Long) As Long
+
 Private Const STR_ATTRIB_START      As String = "Attribute VB_Name "
 Private Const STR_ATTRIB            As String = "Attribute "
 Private Const STR_PRIVATE           As String = "Private "
@@ -14,6 +19,8 @@ Private Const STR_END               As String = "End "
 Private Const STR_SELECT_CASE       As String = "Select Case "
 Private Const STR_CASE              As String = "Case "
 Private Const STR_AS                As String = "As "
+Private Const STR_STOP              As String = "{stop_code_lines}"
+Private Const STR_ON_ERROR          As String = "On Error GoTo"
 
 Private Enum UcsStageEnum
     ucsSearchAttribStart
@@ -25,6 +32,7 @@ Private Enum UcsStageEnum
     ucsSearchFirstCase
     ucsSearchFirstCaseContinue
     ucsSearchSelectCaseContinue
+    ucsSearchOnError
 End Enum
 
 Public Function ProcessProject( _
@@ -83,6 +91,9 @@ Private Function pvProcessFile(sSourceFile As String) As Long
             If StrComp(Left$(sTrimLine, Len(STR_ATTRIB)), STR_ATTRIB, vbTextCompare) = 0 Then
                 GoTo LoopNext
             End If
+            If StrComp(Right$(sTrimLine, Len(STR_STOP)), STR_STOP, vbTextCompare) = 0 Then
+                Exit For
+            End If
             If lStage = ucsSearchProcStart Then
                 '--- searching procedure start
                 If StrComp(Left$(sTrimLine, Len(STR_PRIVATE)), STR_PRIVATE, vbTextCompare) = 0 Then
@@ -99,7 +110,7 @@ Private Function pvProcessFile(sSourceFile As String) As Long
                         Or StrComp(Left$(sTrimLine, Len(STR_FUNCTION)), STR_PROPERTY, vbTextCompare) = 0 Then
                     sTrimLine = Trim$(Mid$(sTrimLine, InStr(sTrimLine, " ")))
                     If StrComp(Left$(sTrimLine, Len(STR_AS)), STR_AS, vbTextCompare) <> 0 Then
-                        lStage = ucsSearchProcEnd
+                        lStage = ucsSearchOnError
                     End If
                 End If
                 If Right$(sTrimLine, 2) = " _" Then
@@ -211,6 +222,12 @@ Private Function pvProcessFile(sSourceFile As String) As Long
                 End If
                 lCurrentLine = lCurrentLine + 1
             End If
+            If lStage = ucsSearchOnError Then
+                If StrComp(Left$(sTrimLine, Len(STR_ON_ERROR)), STR_ON_ERROR, vbTextCompare) = 0 Then
+                    lStage = ucsSearchProcEnd
+                End If
+                lCurrentLine = lCurrentLine + 1
+            End If
         End If
 LoopNext:
     Next
@@ -244,10 +261,44 @@ Private Function pvBeginsWith(sText As String, vMatch As Variant) As Boolean
 End Function
 
 Public Sub Main()
+    Dim vElem           As Variant
+    
     If Command <> "" Then
         g_bNoUI = True
-        ProcessProject Command, 0
+        For Each vElem In SplitArgs(Command$)
+            ProcessProject vElem, 0
+        Next
     Else
         frmMain.Show
     End If
 End Sub
+
+Public Function SplitArgs(sText As String) As Variant
+    Dim vRetVal         As Variant
+    Dim lPtr            As Long
+    Dim lArgc           As Long
+    Dim lIdx            As Long
+    Dim lArgPtr         As Long
+
+    If LenB(sText) <> 0 Then
+        lPtr = CommandLineToArgvW(StrPtr(sText), lArgc)
+    End If
+    If lArgc > 0 Then
+        ReDim vRetVal(0 To lArgc - 1) As String
+        For lIdx = 0 To UBound(vRetVal)
+            Call CopyMemory(lArgPtr, ByVal lPtr + 4 * lIdx, 4)
+            vRetVal(lIdx) = SysAllocString(lArgPtr)
+        Next
+    Else
+        vRetVal = Split(vbNullString)
+    End If
+    Call LocalFree(lPtr)
+    SplitArgs = vRetVal
+End Function
+
+Private Function SysAllocString(ByVal lPtr As Long) As String
+    Dim lTemp           As Long
+
+    lTemp = ApiSysAllocString(lPtr)
+    Call CopyMemory(ByVal VarPtr(SysAllocString), lTemp, 4)
+End Function
